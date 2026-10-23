@@ -712,6 +712,10 @@ final class Recs {
         }
     }
 
+    JSONObject trailerVideos(Pick pick, String language) throws Exception {
+        return get(TrailerChoice.path(pick.kind, pick.id) + "?language=" + language);
+    }
+
     private JSONObject get(String path) throws IOException, org.json.JSONException {
         String key = readKey();
         if (key == null) throw new IOException("no TMDB key");

@@ -232,6 +232,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int w, h;
     private float k = 1;
     private String clockText = "", dateText = "", shortDateText = "", weatherLine = "";
+    private Paint headerClock, headerDate;
+    private boolean cardActions, trailerLoading;
+    private int cardAction, trailerRequest;
+    private String actionPick = "", trailerKey = "";
+    private Bitmap trailerLogo, trailerLogoDark;
+    private final Spring[] actionFocus = {new Spring(0.28f, 0.85f, 0), new Spring(0.28f, 0.85f, 0)};
+    private final RectF actionBox = new RectF();
+    private final Path actionMark = new Path();
     private long weatherLineAt = -1;
     private int weatherLinePrefs = -1;
     private String weatherLineLanguage = "";
@@ -446,6 +454,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Starting state (Home pressed while the home screen is showing): first app focused, drawer and sheet closed. */
     void reset(boolean animated) {
+        closeCardActions();
         wake();
         cancelReorder(!animated);
         zone = Z_SHELF;
@@ -587,6 +596,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lTip.setTextAlign(Paint.Align.CENTER);
         lDate = Ui.text(Ui.semibold, 34 * k, L_DIM);
         lClock = Ui.numbers(Ui.light, 200 * k, L_INK);
+        headerClock = Ui.numbers(Ui.semibold, 54 * k, L_INK);
+        headerClock.setLetterSpacing(-0.02f);
+        headerDate = Ui.text(Ui.medium, 16 * k, L_INK);
         lClock.setLetterSpacing(-0.01f);
         lWeather = Ui.text(Ui.medium, 34 * k, L_DIM);
         lClockQuote = Ui.numbers(Ui.medium, 28 * k, L_DIM);
@@ -647,6 +659,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt), cardsMoving = step(cardFocus, dt);
         cardsMoving |= carouselShift.step(dt);
+        cardsMoving |= step(actionFocus, dt);
         if (topMoving) status.invalidate();
         heroMoving |= topMoving | cardsMoving;
         boolean drawerItemsMoving = step(drawerFocus, dt);
@@ -741,7 +754,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         clockText = Ui.clock(now);
         dateText = Ui.date(now);
         String compactDate = new java.text.SimpleDateFormat("EEEE, dd/MM", Ui.locale()).format(new java.util.Date(now));
-        shortDateText = compactDate.substring(0, 1).toUpperCase(Ui.locale()) + compactDate.substring(1);
+        shortDateText = compactDate;
         return true;
     }
 
@@ -1779,6 +1792,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (snap) heroFocus.snap(heroFocus.target);
         boolean topChanged = aim(topFocus, !sheetOpen && zone == Z_TOP ? topIndex : -1, snap);
         heroChanged |= aim(cardFocus, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, snap) | topChanged;
+        heroChanged |= aim(actionFocus, cardActions && zone == Z_CARDS ? cardAction : -1, snap);
         statusChanged |= topChanged;
         tilesDirty |= snap || tilesChanged;
         statusDirty |= snap || statusChanged;
@@ -2004,7 +2018,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             final List<HomeApps.Item> st = statusList(c);
             final List<HomeApps.Item> d = drawerList(c);
             final List<HomeApps.Item> o = HomeApps.others(c);
+            final Bitmap youtube = HomeApps.ownLogoCached(c, "youtube");
+            final Bitmap youtubeDark = HomeApps.ownLogoCached(c, "youtube-dark");
             handler.post(() -> {
+                trailerLogo = youtube;
+                trailerLogoDark = youtubeDark;
+                heroDirty = true;
                 setShelf(s);
                 setStatusItems(st);
                 setDrawerItems(d);
@@ -2076,7 +2095,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void back() {
-        if (sheetOpen) {
+        if (cardActions) {
+            closeCardActions();
+            retarget(false);
+        } else if (sheetOpen) {
             closeSheet();
         } else if (zone == Z_DRAWER || zone == WIDGETS) {
             closeDrawer();
@@ -2246,7 +2268,35 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             r = topRects[topIndex];
         } else if (zone == Z_CARDS) {
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
-            Stremio.open(activity, p);
+            if (p == null) return;
+            if (!cardActions) {
+                if (cardIndex > 0) {
+                    collectionIndex += cardIndex;
+                    cardIndex = 0;
+                    updateCards();
+                    p = cards.get(0);
+                }
+                cardActions = true;
+                actionPick = Recs.key(p);
+                cardAction = 0;
+                trailerLoading = true;
+                trailerKey = "";
+                int request = ++trailerRequest;
+                Trailers.find(getContext().getApplicationContext(), recs, p, key -> {
+                    if (!cardActions || request != trailerRequest) return;
+                    trailerLoading = false;
+                    trailerKey = key;
+                    heroDirty = true;
+                    wake();
+                    spoken.focusMoved();
+                });
+                heroDirty = true;
+                retarget(false);
+            } else if (cardAction == 1) {
+                Stremio.open(activity, p);
+            } else if (!trailerLoading && !trailerKey.isEmpty()) {
+                Trailers.open(activity, trailerKey);
+            }
             return;
         } else {
             if (shelf.isEmpty()) return;
@@ -2448,7 +2498,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // MARK: - TalkBack: every reachable item as a virtual node (Spoken). Id = group * 1000 + index + 1.
 
     /** The drawer's weather (0) and quotes (1) cards: read by TalkBack, never focused by the remote. */
-    private static final int GRID = 9, WIDGETS = 8;
+    private static final int GRID = 9, WIDGETS = 8, CARD_ACTIONS = 10;
 
     private static int a11yId(int group, int index) {
         return group * 1000 + index + 1;
@@ -2459,6 +2509,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void a11yItems(List<Integer> out) {
+        if (cardActions) {
+            out.add(a11yId(CARD_ACTIONS, 0));
+            out.add(a11yId(CARD_ACTIONS, 1));
+            return;
+        }
         if (sheetOpen) {
             for (int i = 0; i < others.size(); i++) out.add(a11yId(GRID, i));
             return;
@@ -2480,6 +2535,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_TOP:
                 if (i >= 3) return label(lightButtons, i - 3);
                 return Ui.trf("{name}, tab {i} of {n}", "name", tabs()[i], "i", i + 1, "n", 3);
+            case CARD_ACTIONS: return i == 0 ? trailerActionLabel() : Ui.tr("Open in Stremio");
             case Z_CARDS: return i < cards.size() ? pickText(cards.get(i)) : "";
             case Z_SHELF:
                 if (reordering && i == shelfIndex) {
@@ -2501,6 +2557,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int group = (id - 1) / 1000, i = (id - 1) % 1000;
         float dy;
         switch (group) {
+            case CARD_ACTIONS: {
+                if (!cardActions || i > 1) return false;
+                RectF base = cardRects[0];
+                float x = base.left + (base.width() - 592 * k) / 2 + (24 + i * 296) * k;
+                float y = base.bottom - 186 * k;
+                a11yRect.set(x, y, x + 248 * k, y + 128 * k);
+                dy = heroLayer.getTranslationY();
+                break;
+            }
             case GRID: {
                 if (!sheetOpen || i >= others.size()) return false;
                 float gridWidth = COLUMNS * GRID_W + (COLUMNS - 1) * GRID_GAP;
@@ -2547,6 +2612,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private int a11yFocused() {
+        if (cardActions) return a11yId(CARD_ACTIONS, cardAction);
         if (sheetOpen) return others.isEmpty() ? -1 : a11yId(GRID, gridIndex);
         switch (zone) {
             case Z_TOP: return a11yId(Z_TOP, topIndex);
@@ -2578,6 +2644,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void a11yFocus(int id) {
         wake();
         int group = (id - 1) / 1000, i = (id - 1) % 1000;
+        if (group == CARD_ACTIONS && cardActions && i < 2) {
+            cardAction = i;
+            zone = Z_CARDS;
+            retarget(false);
+            return;
+        }
         if (group == GRID) {
             if (!sheetOpen || i >= others.size()) return;
             gridIndex = i;
@@ -2727,6 +2799,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (Recs.Pick p : cards) recs.backdrop(p);
         Backdrop b = cards.isEmpty() ? null : recs.backdrop(cards.get(0));
         if (cards.isEmpty() || b != null) showBackdrop(b);
+        if (cardActions && (cards.isEmpty() || !actionPick.equals(Recs.key(cards.get(0))))) closeCardActions();
         heroDirty = true;
         spoken.focusMoved();    // new picks under the focused card
     }
@@ -2953,6 +3026,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         fill.setColor(0xFF000000);
         c.drawRoundRect(tmp, r0, r0, fill);
         fill.setShader(null);
+        if (i == 0 && cardActions) {
+            drawCardActions(c, bw, bh);
+            c.restore();
+            c.restore();
+            return;
+        }
         fitPaint.set(lCardTitle);
         fitPaint.setColor(WHITE);
         fitPaint.setTextSize((i == 0 ? 42 : 28) * k);
@@ -2998,16 +3077,77 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * Live TV, HDMI Inputs and Settings: icon-only glass circles (light by day, smoked at night); the focused one turns
      * white with a dark icon (the tvOS focus) and its name appears below it.
      */
+    private void closeCardActions() {
+        cardActions = false;
+        trailerRequest++;
+        trailerKey = "";
+        heroDirty = true;
+    }
+
+    private String trailerActionLabel() {
+        return trailerLoading ? Ui.tr("Searching…") : trailerKey.isEmpty()
+                ? Ui.tr("Trailer unavailable.") : Ui.tr("Watch trailer");
+    }
+
+    private void drawCardActions(Canvas c, float width, float height) {
+        fill.setShader(null);
+        fill.setColor(0x44000000);
+        tmp.set(0, 0, width, height);
+        c.drawRoundRect(tmp, 18 * k, 18 * k, fill);
+        float left = (width - 592 * k) / 2, top = height - 210 * k;
+        tmp.set(left, top, left + 592 * k, top + 176 * k);
+        fill.setColor(0x88303A48);
+        c.drawRoundRect(tmp, 32 * k, 32 * k, fill);
+        for (int i = 0; i < 2; i++) {
+            float focus = Ui.clamp(actionFocus[i].value);
+            float x = left + (24 + i * 296) * k, y = top + 24 * k;
+            c.save();
+            c.scale(1 + 0.08f * focus, 1 + 0.08f * focus, x + 124 * k, y + 64 * k);
+            actionBox.set(x, y, x + 248 * k, y + 128 * k);
+            fill.setColor(blend(0xF0191D29, WHITE, focus));
+            c.drawRoundRect(actionBox, 22 * k, 22 * k, fill);
+            int ink = blend(WHITE, INK, focus);
+            if (i == 0) {
+                Bitmap logo = focus > 0.5f ? trailerLogoDark : trailerLogo;
+                if (logo != null) {
+                    float scale = Math.min(180 * k / logo.getWidth(), 48 * k / logo.getHeight());
+                    float lw = logo.getWidth() * scale, lh = logo.getHeight() * scale;
+                    tmp.set(x + (248 * k - lw) / 2, y + 48 * k - lh / 2,
+                            x + (248 * k + lw) / 2, y + 48 * k + lh / 2);
+                    c.drawBitmap(logo, null, tmp, bitmapPaint);
+                }
+            } else {
+                float cx = x + 52 * k, cy = y + 48 * k;
+                fill.setColor(0xFF8953EE);
+                actionMark.reset();
+                actionMark.moveTo(cx, cy - 22 * k); actionMark.lineTo(cx + 22 * k, cy);
+                actionMark.lineTo(cx, cy + 22 * k); actionMark.lineTo(cx - 22 * k, cy); actionMark.close();
+                c.drawPath(actionMark, fill);
+                fill.setColor(WHITE);
+                actionMark.reset();
+                actionMark.moveTo(cx - 5 * k, cy - 9 * k); actionMark.lineTo(cx + 9 * k, cy);
+                actionMark.lineTo(cx - 5 * k, cy + 9 * k); actionMark.close();
+                c.drawPath(actionMark, fill);
+                fitPaint.set(lTabOn); fitPaint.setColor(ink); fitPaint.setTextSize(27 * k);
+                c.drawText("stremio", x + 86 * k, y + 58 * k, fitPaint);
+            }
+            fitPaint.set(lTab); fitPaint.setColor(ink); fitPaint.setTextSize(19 * k);
+            String label = i == 0 ? trailerActionLabel() : Ui.tr("Open in Stremio");
+            float labelWidth = fitPaint.measureText(label);
+            if (labelWidth > 224 * k) fitPaint.setTextSize(19 * k * 224 * k / labelWidth);
+            c.drawText(label, x + 124 * k - fitPaint.measureText(label) / 2, y + 104 * k, fitPaint);
+            c.restore();
+        }
+    }
+
     private void drawLightButtons(Canvas c) {
         applyTone();
         if (picksOn()) {
-            fitPaint.set(lTab);
-            fitPaint.setColor(tone(L_INK, WHITE));
-            fitPaint.setTextSize(48 * k);
-            float x = (CONTENT_R - 185) * k;
-            c.drawText(clockText, x, 92 * k, fitPaint);
-            fitPaint.setTextSize(18 * k);
-            c.drawText(shortDateText, x, 124 * k, fitPaint);
+            headerClock.setColor(tone(0xFF101820, WHITE));
+            headerDate.setColor(tone(0xFF39434C, 0xFFE0E6EC));
+            float x = (CONTENT_R - 198) * k;
+            c.drawText(clockText, x - Ui.leftBearing(headerClock, clockText), 100 * k, headerClock);
+            c.drawText(shortDateText, x, 134 * k, headerDate);
         }
         for (int i = 0; i < 3; i++) {
             RectF r = topRects[3 + i];
@@ -3050,6 +3190,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 }
                 break;
             case Z_CARDS:
+                if (cardActions) {
+                    if (dx != 0) cardAction = Math.max(0, Math.min(1, cardAction + dx));
+                    else if (dy != 0) closeCardActions();
+                    retarget(false);
+                    heroDirty = true;
+                    click.move();
+                    return true;
+                }
                 if (dx != 0) {
                     int next = Math.max(0, Math.min(collection.size() - 1, collectionIndex + dx));
                     if (next == collectionIndex) return true;
