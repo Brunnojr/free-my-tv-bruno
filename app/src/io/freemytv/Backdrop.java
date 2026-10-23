@@ -27,7 +27,7 @@ final class Backdrop {
     private static final float UI_SCALE = uiScale();
     static final int W = ui(1920), H = ui(1080), FW = 192, FH = 108, GW = 480, GH = 270;
     /** The cards at their focused size (1.05×): the wide one and the two tall ones. */
-    static final int WIDE_W = ui(1092), WIDE_H = ui(464), TALL_W = ui(336), TALL_H = ui(464);
+    static final int WIDE_W = ui(1092), WIDE_H = ui(582), TALL_W = ui(336), TALL_H = ui(582);
 
     private static float uiScale() {
         android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();
@@ -73,9 +73,9 @@ final class Backdrop {
         if (forLight) {
             // Light design: everything comes from the photo without scrims.
             Bitmap wide = card(out, WIDE_W, WIDE_H), tall = card(out, TALL_W, TALL_H);
-            int[] frost = reduce(out, FW, FH, 3, 3);
+            int[] frost = reduce(out, FW, FH, 4, 4);
             int[] light = whiten(frost.clone(), 0.82f);
-            int[] glass = reduce(out, GW, GH, 2, 2);
+            int[] glass = reduce(out, GW, GH, 3, 3);
             int[] lightGlass = whiten(glass.clone(), 0.74f);
             int[] night = darken(frost.clone(), 0.76f);
             int[] nightGlass = darken(glass, 0.56f);

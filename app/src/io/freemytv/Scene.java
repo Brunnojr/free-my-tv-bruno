@@ -5,6 +5,7 @@ import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.RuntimeShader;
@@ -36,6 +37,8 @@ final class Scene {
     private boolean auroraDirty = true, imageFrost, imageGlass;
     private Bitmap frostImage, glassA, glassB;
     private BitmapShader glassShaderA;
+    private BitmapShader fallbackGlass;
+    private final Matrix fallbackMatrix = new Matrix();
     private final boolean withGlass;
 
     Scene() {
@@ -128,7 +131,10 @@ final class Scene {
         imageGlass = true;
         glassA = fill(glassA, from);
         if (to != null) glassB = fill(glassB, to);
-        if (liquid == null) return;
+        if (liquid == null) {
+            fallbackGlass = new BitmapShader(glassA, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            return;
+        }
         glassShaderA = linear(glassA);
         liquid.setInputShader("imageA", glassShaderA);
         liquid.setInputShader("imageB", to != null ? linear(glassB) : glassShaderA);
@@ -143,6 +149,7 @@ final class Scene {
     /** The liquid glass goes back to the frosted aurora. */
     void clearGlass() {
         if (!imageGlass) return;
+        fallbackGlass = null;
         imageGlass = false;
         advance(time);
     }
@@ -167,7 +174,7 @@ final class Scene {
                 float specular, float alpha) {
         if (alpha <= 0.004f) return;
         if (liquid == null) {
-            glass(c, r, radius, tint, Math.max(0.5f, tintAlpha), 0, 0, lift, 1, alpha);
+            glass(c, r, radius, tint, tintAlpha, 0, 0, lift, 1, alpha);
             return;
         }
         liquid.setFloatUniform("center", r.centerX(), r.centerY());
@@ -254,7 +261,15 @@ final class Scene {
         if (alpha <= 0.004f) return;
         if (glass == null) {
             if (body > 0) {
-                flatFill.setColor(Ui.alpha(tint | 0xFF000000, Math.max(0.35f, tintAlpha)));
+                if (fallbackGlass != null) {
+                    fallbackMatrix.setScale((float) w / Backdrop.GW, (float) h / Backdrop.GH);
+                    fallbackGlass.setLocalMatrix(fallbackMatrix);
+                    flatFill.setShader(fallbackGlass);
+                    flatFill.setAlpha(Math.round(alpha * 255));
+                    c.drawRoundRect(r, radius, radius, flatFill);
+                    flatFill.setShader(null);
+                }
+                flatFill.setColor(Ui.alpha(tint | 0xFF000000, Math.max(0.08f, tintAlpha) * alpha));
                 c.drawRoundRect(r, radius, radius, flatFill);
             }
             c.drawRoundRect(r, radius, radius, flatRim);

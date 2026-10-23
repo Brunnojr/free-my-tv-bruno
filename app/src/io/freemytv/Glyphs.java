@@ -20,9 +20,17 @@ final class Glyphs {
 
     private static final SparseArray<Bitmap> BITMAPS = new SparseArray<>();
     private static final Paint PAINT = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private static final Paint DOLLAR = new Paint(Paint.ANTI_ALIAS_FLAG);
+    static { DOLLAR.setTypeface(android.graphics.Typeface.DEFAULT_BOLD); }
 
     /** Draws the coin centered at (cx, cy), sized to the text next to it (cap height `cap`), in `color`. */
     static void coin(Context context, Canvas c, String coin, float cx, float cy, float cap, int color) {
+        if (coin.equals("USDT")) {
+            DOLLAR.setTextSize(cap * 1.4f);
+            DOLLAR.setColor(color);
+            c.drawText("$", cx - DOLLAR.measureText("$") / 2, cy + Ui.halfCap(DOLLAR), DOLLAR);
+            return;
+        }
         Bitmap b = bitmap(context, coin, frame(cap));
         if (b == null) return;
         PAINT.setColor(color);
@@ -31,6 +39,10 @@ final class Glyphs {
 
     /** Width the symbol takes up (for laying out the line). */
     static float width(Context context, String coin, float cap) {
+        if (coin.equals("USDT")) {
+            DOLLAR.setTextSize(cap * 1.4f);
+            return DOLLAR.measureText("$");
+        }
         Bitmap b = bitmap(context, coin, frame(cap));
         return b == null ? 0 : b.getWidth();
     }

@@ -43,8 +43,8 @@ final class HomeData {
     private static String quote() {
         return CURRENCY.equals("USD") || inDollars ? "USDT" : CURRENCY;
     }
-    private static final String WEATHER_QUERY = "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
-            + "&hourly=temperature_2m,weather_code,is_day&timezone=auto&forecast_days=2";
+    private static final String WEATHER_QUERY = "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weather_code,precipitation_probability_max,wind_speed_10m_max"
+            + "&hourly=temperature_2m,weather_code,is_day&timezone=auto&forecast_days=7&forecast_hours=48";
 
     private static String weatherPlace() {
         return Prefs.latitude() + "," + Prefs.longitude();
@@ -123,6 +123,11 @@ final class HomeData {
         final List<Double> hourTemp = new ArrayList<>();
         final List<Integer> hourCode = new ArrayList<>();
         final List<Boolean> hourDay = new ArrayList<>();
+        final List<String> days = new ArrayList<>();
+        final List<Double> dayMax = new ArrayList<>(), dayMin = new ArrayList<>();
+        final List<Integer> dayCode = new ArrayList<>();
+        final List<Long> dayRise = new ArrayList<>(), daySet = new ArrayList<>();
+        final List<Double> dayRain = new ArrayList<>(), dayWind = new ArrayList<>();
     }
 
     private static HomeData instance;
@@ -137,6 +142,25 @@ final class HomeData {
     final double[] changes = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
     volatile long pricesAt, weatherAt;
     volatile Weather weather = new Weather();
+    static final class Indicator {
+        final double value;
+        final String date;
+        final long fetchedAt;
+        Indicator(String body, long fetchedAt) throws Exception {
+            JSONObject row = new JSONArray(body).getJSONObject(0);
+            value = Double.parseDouble(row.getString("valor").replace(',', '.'));
+            date = row.getString("data");
+            if (!Double.isFinite(value) || !date.matches("\\d{2}/\\d{2}/\\d{4}")) throw new IOException("Invalid indicator");
+            this.fetchedAt = fetchedAt;
+        }
+    }
+    final Indicator[] indicators = new Indicator[2];
+    private final boolean[] fetchingIndicators = new boolean[2];
+    private final long[] indicatorFailures = new long[2];
+    static boolean brazilIndicators() { return Prefs.quotes() && CURRENCY.equals("BRL"); }
+    static int indicatorCount() {
+        return brazilIndicators() ? (Prefs.indicator(0) ? 1 : 0) + (Prefs.indicator(1) ? 1 : 0) : 0;
+    }
 
     private final SharedPreferences cache;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -148,6 +172,12 @@ final class HomeData {
     private HomeData(Context c) {
         cache = c.getSharedPreferences("homedata", Context.MODE_PRIVATE);
         inDollars = CURRENCY.equals(cache.getString("dollarsFor", ""));
+        for (int i = 0; i < indicators.length; i++) {
+            try {
+                String body = cache.getString("indicator" + i, null);
+                if (body != null) indicators[i] = new Indicator(body, cache.getLong("indicatorAt" + i, 0));
+            } catch (Exception ignored) { }
+        }
         try {
             if (Prefs.quotes()) {
                 String p = cache.getString("prices", null);
@@ -159,6 +189,8 @@ final class HomeData {
             if (w != null && weatherPlace().equals(cache.getString("weatherPlace", ""))) {
                 weather = parseWeather(w);
                 weatherAt = cache.getLong("weatherAt", 0);
+                if (weather.days.isEmpty()) weatherAt = 0;
+                if (cache.getInt("weatherQuery", 0) != 2) weatherAt = 0;
             }
         } catch (Exception ignored) {}
     }
@@ -203,13 +235,42 @@ final class HomeData {
                     String body = get(weatherUrl());
                     weather = parseWeather(body);
                     weatherAt = System.currentTimeMillis();
-                    cache.edit().putString("weather", body).putLong("weatherAt", weatherAt).putString("weatherPlace", weatherPlace()).apply();
+                    cache.edit().putString("weather", body).putLong("weatherAt", weatherAt).putString("weatherPlace", weatherPlace())
+                            .putInt("weatherQuery", 2).apply();
                     notifyListeners();
                 } catch (Exception e) {
                     weatherFailedAt = System.currentTimeMillis();
                     AppLog.w("weather: " + e.getMessage());
                 } finally {
                     fetchingWeather = false;
+                }
+            });
+        }
+        refreshIndicators(now);
+    }
+
+    private void refreshIndicators(long now) {
+        if (!brazilIndicators()) return;
+        for (int i = 0; i < indicators.length; i++) {
+            if (!Prefs.indicator(i)) continue;
+            Indicator previous = indicators[i];
+            if (fetchingIndicators[i] || previous != null && now >= previous.fetchedAt
+                    && now - previous.fetchedAt < 24 * 60 * 60_000L) continue;
+            if (indicatorFailures[i] != 0 && now >= indicatorFailures[i]
+                    && now - indicatorFailures[i] < 30 * 60_000L) continue;
+            final int index = i;
+            fetchingIndicators[index] = true;
+            io.execute(() -> {
+                try {
+                    String body = get("https://api.bcb.gov.br/dados/serie/bcdata.sgs."
+                            + (index == 0 ? "432" : "13522") + "/dados/ultimos/1?formato=json");
+                    Indicator result = new Indicator(body, System.currentTimeMillis());
+                    cache.edit().putString("indicator" + index, body)
+                            .putLong("indicatorAt" + index, result.fetchedAt).apply();
+                    main.post(() -> { indicators[index] = result; fetchingIndicators[index] = false; notifyListeners(); });
+                } catch (Exception e) {
+                    main.post(() -> { indicatorFailures[index] = System.currentTimeMillis(); fetchingIndicators[index] = false; });
+                    AppLog.w("BCB indicator: " + e.getMessage());
                 }
             });
         }
@@ -251,6 +312,22 @@ final class HomeData {
         w.code = current.getInt("weather_code");
         w.isDay = current.optInt("is_day", 1) == 1;
         JSONObject daily = o.getJSONObject("daily");
+        JSONArray dayDates = daily.optJSONArray("time"), dayCodes = daily.optJSONArray("weather_code");
+        if (dayDates != null && dayCodes != null) {
+            for (int i = 0; i < Math.min(7, Math.min(dayDates.length(), dayCodes.length())); i++) {
+                if (daily.getJSONArray("temperature_2m_max").isNull(i)
+                        || daily.getJSONArray("temperature_2m_min").isNull(i) || dayCodes.isNull(i)) continue;
+                w.days.add(dayDates.getString(i));
+                w.dayMax.add(daily.getJSONArray("temperature_2m_max").getDouble(i));
+                w.dayMin.add(daily.getJSONArray("temperature_2m_min").getDouble(i));
+                w.dayCode.add(dayCodes.getInt(i));
+                w.dayRise.add(localTime(daily.getJSONArray("sunrise").getString(i), zone));
+                w.daySet.add(localTime(daily.getJSONArray("sunset").getString(i), zone));
+                JSONArray rain = daily.optJSONArray("precipitation_probability_max"), wind = daily.optJSONArray("wind_speed_10m_max");
+                w.dayRain.add(rain == null ? Double.NaN : rain.optDouble(i, Double.NaN));
+                w.dayWind.add(wind == null ? Double.NaN : wind.optDouble(i, Double.NaN));
+            }
+        }
         w.max = daily.getJSONArray("temperature_2m_max").getDouble(0);
         w.min = daily.getJSONArray("temperature_2m_min").getDouble(0);
         w.sunrise = localTime(daily.getJSONArray("sunrise").getString(0), zone);

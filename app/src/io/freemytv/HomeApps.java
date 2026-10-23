@@ -895,6 +895,20 @@ final class HomeApps {
     }
 
     private static Bitmap ownLogo(Context c, String key) {
+        if (key.equals("youtube-dark")) {
+            Bitmap source = ownLogo(c, "youtube");
+            if (source == null) return null;
+            Bitmap dark = source.copy(Bitmap.Config.ARGB_8888, true);
+            Canvas canvas = new Canvas(dark);
+            canvas.save();
+            // Only the wordmark changes; the red play button and its white triangle stay intact.
+            canvas.clipRect(dark.getWidth() * 0.27f, 0, dark.getWidth(), dark.getHeight());
+            Paint ink = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+            ink.setColorFilter(new android.graphics.PorterDuffColorFilter(0xFF151515, android.graphics.PorterDuff.Mode.SRC_IN));
+            canvas.drawBitmap(source, 0, 0, ink);
+            canvas.restore();
+            return dark;
+        }
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;

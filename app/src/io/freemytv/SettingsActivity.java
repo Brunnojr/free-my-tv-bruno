@@ -122,7 +122,7 @@ public class SettingsActivity extends Activity {
         private final SettingsActivity activity;
         private final Scene scene = new Scene();
         private final Handler handler = new Handler(Looper.getMainLooper());
-        private final Spring[] pop = new Spring[12];
+        private final Spring[] pop = new Spring[Math.max(7 + HomeData.COINS.length + 2, Prefs.KEYS.length)];
         private final List<String> appPkgs = new ArrayList<>(), appLabels = new ArrayList<>();
         // The list picker (the app of a remote button): what it shows, which one is in use, where we are.
         private final List<String> pickLabels = new ArrayList<>();
@@ -253,8 +253,9 @@ public class SettingsActivity extends Activity {
                 top = LIST_TOP + 20 + row * (CHOICE_H + ROW_GAP);
                 height = CHOICE_H;
             } else {
-                top = LIST_TOP + 20 + row * (LIST_ROW_H + LIST_ROW_GAP);
-                height = LIST_ROW_H;
+                float stride = screen == HOME_SETTINGS ? settingsStride() : LIST_ROW_H + LIST_ROW_GAP;
+                top = LIST_TOP + 20 + row * stride;
+                height = stride - LIST_ROW_GAP;
             }
             focusBox.set(LIST_X * k, top * k, LIST_R * k, (top + height) * k);
             return focusBox;
@@ -644,7 +645,11 @@ public class SettingsActivity extends Activity {
             l.add("Bitcoin");
             l.add("Ethereum");
             l.add("Solana");
-            if (dollar()) l.add(Ui.tr("Dollar"));
+            if (dollar()) {
+                l.add(Ui.tr("Dollar"));
+                l.add(Ui.tr("Selic (%/year)"));
+                l.add(Ui.tr("IPCA (12 months)"));
+            }
             return l.toArray(new String[0]);
         }
 
@@ -662,7 +667,10 @@ public class SettingsActivity extends Activity {
             v[CITY_ROW] = !cityStatus.isEmpty() ? cityStatus : Prefs.city().isEmpty() ? "—" : Prefs.city();
             v[6] = onOff(Prefs.quotes());
             // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
-            for (int i = COIN_ROWS; i < v.length; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
+            for (int i = COIN_ROWS; i < v.length; i++) {
+                int index = i - COIN_ROWS;
+                v[i] = onOff(Prefs.quotes() && (index < 4 ? Prefs.coin(index) : Prefs.indicator(index - 4)));
+            }
             return v;
         }
 
@@ -744,7 +752,9 @@ public class SettingsActivity extends Activity {
                 case 6: Prefs.setQuotes(!Prefs.quotes()); break;
                 default:
                     if (!Prefs.quotes()) return;
-                    Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
+                    int index = focus - COIN_ROWS;
+                    if (index < 4) Prefs.setCoin(index, !Prefs.coin(index));
+                    else Prefs.setIndicator(index - 4, !Prefs.indicator(index - 4));
                     break;
             }
             HomeData.get(getContext()).settingsChanged();
@@ -935,16 +945,21 @@ public class SettingsActivity extends Activity {
                     LIST_X * k + 30 * k, hy, hint);
         }
 
+        private float settingsStride() {
+            return Math.min(LIST_ROW_H + LIST_ROW_GAP, 800f / rowCount());
+        }
+
         private void drawList(Canvas c) {
             boolean keys = screen == REMOTE_KEYS;
             String[] labels = keys ? keyLabels() : settingLabels();
             String[] values = keys ? keyValues() : settingValues();
+            float stride = keys ? LIST_ROW_H + LIST_ROW_GAP : settingsStride();
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
             c.drawText(keys ? Ui.tr("Remote Buttons") : Ui.tr("Home Settings"),
                     LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
             for (int i = 0; i < labels.length; i++) {
-                float y = (LIST_TOP + 20 + i * (LIST_ROW_H + LIST_ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
+                float y = (LIST_TOP + 20 + i * stride) * k;
+                rowRect.set(LIST_X * k, y, LIST_R * k, y + (stride - LIST_ROW_GAP) * k);
                 float f = drawRowBackground(c, i);
                 rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
                 boolean locked = !keys && i >= COIN_ROWS && !Prefs.quotes();
@@ -955,7 +970,7 @@ public class SettingsActivity extends Activity {
                 c.drawText(values[i], rowRect.right - 30 * k, base, rowValue);
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            float hy = (LIST_TOP + 20 + labels.length * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
+            float hy = (LIST_TOP + 20 + labels.length * stride + 36) * k;
             c.drawText(Ui.tr("OK or the arrows change the value."), LIST_X * k + 30 * k, hy, hint);
             if (keys) {
                 c.drawText(RemoteKeys.VESTEL ? Ui.tr("YouTube, Prime Video and Google Play: the TV itself controls those buttons.")

@@ -120,6 +120,8 @@ final class Prefs {
     static void setQuotes(boolean on) { put("quotes", on); }
 
     static boolean coin(int i) { return sp().getBoolean("coin" + i, true); }
+    static boolean indicator(int i) { return sp().getBoolean("indicator" + i, true); }
+    static void setIndicator(int i, boolean on) { put("indicator" + i, on); }
     static void setCoin(int i, boolean on) { put("coin" + i, on); }
 
     // MARK: - Shelf

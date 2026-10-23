@@ -48,6 +48,11 @@ final class Recs {
         String title, backdrop, meta = "", app, pkg;
         String link;            // opens the title in its app (looked up with Watchmode), or null: the app's home
         boolean detailed;
+        String overview = "", imdb = "", providers = "";
+        String year = "";
+        String info = "";
+        double rating;
+        long detailsFailedAt;
     }
 
     interface Listener { void onRecs(); }
@@ -59,7 +64,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 3;
+    private static final int CACHE_VERSION = 4;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
@@ -112,6 +117,7 @@ final class Recs {
     private final List<Listener> listeners = new ArrayList<>();
     private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
+    private final java.util.Set<String> detailPending = new java.util.HashSet<>();
     private volatile List<Pick> picks = new ArrayList<>();
     private volatile int period = -1;
     private volatile long listAt;
@@ -183,6 +189,10 @@ final class Recs {
 
     /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
+        return now(kind, 3);
+    }
+
+    List<Pick> now(String kind, int limit) {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
@@ -195,7 +205,7 @@ final class Recs {
         // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < 3; i++) {
+        for (int i = 0; i < list.size() && out.size() < limit; i++) {
             Pick p = list.get((int) ((hour * 3 + i) % list.size()));
             if (seen.add(franchise(p.title))) out.add(p);
         }
@@ -218,6 +228,7 @@ final class Recs {
     /** The pick's ready backdrop (or null: builds it in the background and notifies when it's ready). */
     Backdrop backdrop(Pick p) {
         if (p == null || p.backdrop == null) return null;
+        prepare(p);
         final String key = p.backdrop;    // the details may swap the image midway
         synchronized (images) {
             Backdrop b = images.get(key);
@@ -232,6 +243,25 @@ final class Recs {
             }
         });
         return null;
+    }
+
+    private void prepare(Pick p) {
+        synchronized (detailPending) {
+            if (p.detailed || System.currentTimeMillis() - p.detailsFailedAt < 600_000L
+                    || !detailPending.add(key(p))) return;
+        }
+        io.execute(() -> {
+            try {
+                fetchDetails(p);
+                save();
+            } catch (Exception ignored) {
+                p.detailsFailedAt = System.currentTimeMillis();
+                // Keep the cached title usable when a detail request fails.
+            } finally {
+                synchronized (detailPending) { detailPending.remove(key(p)); }
+                notifyListeners();
+            }
+        });
     }
 
     private boolean hasImage(Pick p) {
@@ -480,8 +510,15 @@ final class Recs {
     /** Genre, runtime (or seasons) and the service it's on, among the ones the TV has. */
     private void fetchDetails(Pick p) throws Exception {
         JSONObject o = get("/" + p.kind + "/" + p.id
-                + "?language=" + lang() + "&append_to_response=watch/providers,images&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
+                + "?language=" + lang() + "&append_to_response=watch/providers,images,external_ids&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
         p.title = title(p, o);
+        p.overview = o.optString("overview", "");
+        p.rating = o.optDouble("vote_average", 0);
+        String date = o.optString(p.kind.equals("movie") ? "release_date" : "first_air_date", "");
+        p.year = date.length() >= 4 ? date.substring(0, 4) : "";
+        JSONObject external = o.optJSONObject("external_ids");
+        p.imdb = external == null ? "" : external.optString("imdb_id", "");
+        if (!p.imdb.matches("tt[0-9]+")) p.imdb = "";
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
         List<String> parts = new ArrayList<>();
@@ -501,6 +538,12 @@ final class Recs {
         JSONObject wp = o.optJSONObject("watch/providers");
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
         JSONArray flat = br == null ? null : br.optJSONArray("flatrate");
+        List<String> names = new ArrayList<>();
+        for (int i = 0; flat != null && i < flat.length(); i++) {
+            String name = flat.getJSONObject(i).optString("provider_name", "");
+            if (!name.isEmpty() && !names.contains(name)) names.add(name);
+        }
+        p.providers = String.join(" · ", names);
         for (int i = 0; flat != null && i < flat.length() && p.app == null; i++) {
             String[] s = service(flat.getJSONObject(i).optString("provider_name"));
             if (s != null && installed(s[2])) {
@@ -508,6 +551,7 @@ final class Recs {
                 p.pkg = s[2];
             }
         }
+        p.info = String.join(" · ", parts);
         if (p.app != null) parts.add(SERVICE_NAME.get(p.app));
         p.meta = String.join(" · ", parts);
         p.detailed = true;
@@ -741,7 +785,7 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                while (images.size() > (forLight ? 5 : 4)) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
@@ -786,6 +830,9 @@ final class Recs {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop).put("link", p.link == null ? "" : p.link)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("detailed", p.detailed));
+                JSONObject saved = a.getJSONObject(a.length() - 1);
+                saved.put("overview", p.overview).put("imdb", p.imdb).put("providers", p.providers)
+                        .put("year", p.year).put("rating", p.rating).put("info", p.info);
             }
             SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -814,6 +861,20 @@ final class Recs {
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
+            p.overview = o.optString("overview");
+            p.imdb = o.optString("imdb");
+            p.providers = o.optString("providers");
+            p.year = o.optString("year");
+            String cachedInfo = p.meta;
+            String serviceName = SERVICE_NAME.get(p.app);
+            if (serviceName != null && cachedInfo.endsWith(" · " + serviceName)) {
+                cachedInfo = cachedInfo.substring(0, cachedInfo.length() - serviceName.length() - 3);
+            }
+            p.info = o.optString("info", cachedInfo);
+            if (serviceName != null && p.info.endsWith(" · " + serviceName)) {
+                p.info = p.info.substring(0, p.info.length() - serviceName.length() - 3);
+            }
+            p.rating = o.optDouble("rating", 0);
             out.add(p);
         }
         return out;
